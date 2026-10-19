@@ -1,0 +1,6 @@
+[Unit]
+Description=IMAP Spam Filter Bogofilter Persistent Data Volume
+
+[Volume]
+User=10001
+Group=10001
