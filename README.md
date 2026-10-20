@@ -50,11 +50,23 @@ echo -n "YOUR_PASSWORD" | podman secret create imap_pass_secret -
 ```
 
 ### 4. Initial Training
-Bogofilter requires an initial corpus of messages to learn spam vs ham characteristics.
-Run batch training on existing messages in your Junk and INBOX folders:
-```bash
-./install.sh train
-```
+Bogofilter requires an initial corpus of messages to learn spam vs ham characteristics. You can train it automatically using existing mailbox folders or interactively review incoming messages:
+
+- **Option A: Automated Batch Training**
+  Train on existing messages in your `Junk` (spam) and `INBOX` (ham) folders:
+  ```bash
+  ./install.sh train
+  ```
+
+- **Option B: Interactive Live Training**
+  Review recent messages in your remote `INBOX` from newest to oldest in an interactive terminal. Each message displays headers, a body snippet, and Bogofilter's current prediction:
+  ```bash
+  # Review interactively until you choose to exit with 'q'
+  ./install.sh live-train
+
+  # Or limit review to the latest N messages (e.g. 25)
+  ./install.sh live-train 25
+  ```
 You can inspect the number of trained messages at any time:
 ```bash
 ./install.sh stats
@@ -76,6 +88,7 @@ The `install.sh` helper provides management commands:
 |---|---|
 | `./install.sh run` | Trigger a manual filter run and view journal output |
 | `./install.sh train` | Run automated batch training on `Junk` and `INBOX` |
+| `./install.sh live-train [N]` | Run interactive live training on INBOX messages (newest first; N=0 or omitted = until 'q') |
 | `./install.sh stats` | Show Bogofilter database statistics (trained message counts) |
 | `./install.sh build` | Sync changes to `~/.local/src/imap-filter` and rebuild container |
 | `./install.sh status` | Check status of container service and build service |

@@ -24,14 +24,16 @@ fi
 # Verify Bogofilter database presence
 if [ ! -f "${DATA_DIR}/wordlist.db" ]; then
 	echo "[!] Notice: No Bogofilter wordlist found at '${DATA_DIR}/wordlist.db'."
-	if [ "${FILTER_MODE}" != "train" ]; then
+	if [ "${FILTER_MODE}" != "train" ] && [ "${FILTER_MODE}" != "live-train" ] && [ "${FILTER_MODE}" != "interactive" ]; then
 		echo "[!] The filter will not flag messages until it is trained."
-		echo "[!] To train on your existing emails, run with FILTER_MODE=train (e.g. './install.sh train')."
+		echo "[!] To train on your existing emails, run with FILTER_MODE=train (e.g. './install.sh train') or './install.sh live-train'."
 	fi
 fi
 
 if [ "${FILTER_MODE}" = "train" ]; then
 	echo "[+] Starting spam filter in AUTOMATED BATCH TRAINING mode..."
+elif [ "${FILTER_MODE}" = "live-train" ] || [ "${FILTER_MODE}" = "interactive" ]; then
+	echo "[+] Starting spam filter in INTERACTIVE LIVE TRAINING mode..."
 else
 	echo "[+] Starting spam filter in FILTER mode..."
 	echo "[+] Monitoring Inbox: '${IMAP_INBOX_FOLDER}' -> Target Junk: '${IMAP_JUNK_FOLDER}'"

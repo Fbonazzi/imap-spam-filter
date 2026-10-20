@@ -12,13 +12,14 @@ PODMAN_SECRET="imap_pass_secret"
 
 usage() {
     cat << EOF
-Usage: $0 [ install | build | run | train | stats | status | logs | reinstall | uninstall ]
+Usage: $0 [ install | build | run | train | live-train [LIMIT] | stats | status | logs | reinstall | uninstall ]
 
 Commands:
   install          Install Quadlet units, deploy source to ~/.local/src, and build image
   build            Sync local source changes to ~/.local/src and rebuild container
   run              Run the filter service once and display logs
   train            Run automated batch training on Junk (spam) and INBOX (ham)
+  live-train [N]   Interactive live training on INBOX messages (newest to oldest; N=0 or omitted = until 'q')
   stats            Show Bogofilter database wordlist statistics (message counts)
   status           Show systemd status of container and build services
   logs             View recent journal logs for the filter service
@@ -139,6 +140,34 @@ stats_service() {
     }
 }
 
+
+live_train_service() {
+    check_prerequisites
+    local limit="${1:-0}"
+    echo "[+] Starting interactive live training on remote inbox..."
+    if [ "${limit}" -gt 0 ] 2>/dev/null; then
+        echo "[*] Review limit: ${limit} newest messages"
+    else
+        echo "[*] Review limit: Unlimited (interactive until 'q')"
+        limit="0"
+    fi
+
+    if ! podman image exists localhost/imap-spam-filter:latest; then
+        echo "[*] Building container image first..."
+        systemctl --user start imap-spam-filter-build.service
+    fi
+
+    podman run --rm -it \
+        --name imap_spam_filter_live_train \
+        --env-file "${CONFIG_DIR}/imap.env" \
+        -e FILTER_MODE=live-train \
+        -e LIVE_TRAIN_MAX="${limit}" \
+        --secret "${PODMAN_SECRET},type=mount,target=/run/secrets/imap_pass_secret" \
+        -v "${PODMAN_VOLUME_NAME}:/home/imap-filter/data:rw" \
+        -v "${CONFIG_DIR}/config.lua:/home/imap-filter/config/config.lua:ro,Z" \
+        localhost/imap-spam-filter:latest
+}
+
 build_service() {
     echo "[+] Syncing source changes to ${SOURCE_DEPLOY_DIR}..."
     mkdir -p "${SOURCE_DEPLOY_DIR}"
@@ -230,6 +259,9 @@ case "${ACTION}" in
         ;;
     train)
         train_service
+        ;;
+    live-train|train-live|interactive)
+        live_train_service "$@"
         ;;
     stats|info)
         stats_service
