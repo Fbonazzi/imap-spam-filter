@@ -33,38 +33,162 @@ local function parse_header_field(hdr, field)
 	return line
 end
 
-local function get_body_snippet(raw_msg, max_chars)
+local function html_to_plain(html)
+	if not html or type(html) ~= "string" or html == "" then return "" end
+
+	local tmp_file = string.format("/tmp/preview_%d_%d.html", os.time(), math.random(1000, 9999))
+	local f = io.open(tmp_file, "w")
+	if not f then return html end
+	f:write(html)
+	f:close()
+
+	local cmd = string.format(
+		"lynx -dump -nolist -nonumbers -nomargins " ..
+		"-display_charset=utf-8 -assume_charset=utf-8 -assume_local_charset=utf-8 " ..
+		"-hiddenlinks=ignore -width=80 %q 2>/dev/null",
+		tmp_file
+	)
+	local p = io.popen(cmd, "r")
+	local text = html
+	if p then
+		local out = p:read("*a")
+		p:close()
+		if out and out:match("%S") then
+			text = out
+		end
+	end
+	os.remove(tmp_file)
+	return (text:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function decode_qp(s)
+	if not s or type(s) ~= "string" then return "" end
+	s = s:gsub("=\r?\n", "")
+	s = s:gsub("=([0-9A-Fa-f][0-9A-Fa-f])", function(hex)
+		return string.char(tonumber(hex, 16))
+	end)
+	return s
+end
+
+local b64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function decode_b64(data)
+	if not data or type(data) ~= "string" then return "" end
+	data = string.gsub(data, "[^" .. b64_chars .. "=]", "")
+	return (data:gsub("..?.?.?", function(x)
+		if #x < 2 then return "" end
+		local c = 0
+		for i = 1, 4 do
+			local ch = x:sub(i, i)
+			local val = (b64_chars:find(ch, 1, true) or 1) - 1
+			if ch == "=" then val = 0 end
+			c = c * 64 + val
+		end
+		local c1 = math.floor(c / 65536) % 256
+		local c2 = math.floor(c / 256) % 256
+		local c3 = c % 256
+		if x:sub(4, 4) == "=" then
+			if x:sub(3, 3) == "=" then return string.char(c1) end
+			return string.char(c1, c2)
+		end
+		return string.char(c1, c2, c3)
+	end))
+end
+
+local function extract_mime_part(body, target_type)
+	local s = body:gsub("\r\n", "\n"):gsub("\r", "\n")
+	local pattern = "[Cc][Oo][Nn][Tt][Ee][Nn][Tt]%-[Tt][Yy][Pp][Ee]:%s*" .. target_type
+	local match_start, match_end = s:find(pattern)
+	if not match_start then return nil end
+
+	local hdr_end_start, hdr_end = s:find("\n\n", match_start, true)
+	if not hdr_end then return nil end
+
+	local last_bnd = 0
+	while true do
+		local bnd = s:find("\n%-%-", last_bnd + 1)
+		if bnd and bnd < match_start then
+			last_bnd = bnd
+		else
+			break
+		end
+	end
+	local hdr_start = (last_bnd > 0 and last_bnd + 1) or 1
+	local part_headers = s:sub(hdr_start, hdr_end_start)
+
+	local cte = part_headers:match("[Cc][Oo][Nn][Tt][Ee][Nn][Tt]%-[Tt][Rr][Aa][Nn][Ss][Ff][Ee][Rr]%-[Ee][Nn][Cc][Oo][Dd][Ii][Nn][Gg]:%s*([%w%-_]+)")
+	cte = cte and cte:lower()
+
+	local payload_start = hdr_end + 1
+	local next_bnd_start = s:find("\n%-%-", payload_start)
+	local payload = (next_bnd_start and s:sub(payload_start, next_bnd_start - 1)) or s:sub(payload_start)
+
+	if cte == "quoted-printable" then
+		payload = decode_qp(payload)
+	elseif cte == "base64" then
+		payload = decode_b64(payload)
+	end
+
+	return payload
+end
+
+local function get_body_snippet(raw_msg, max_chars, header)
 	if not raw_msg or type(raw_msg) ~= "string" then return "" end
 	max_chars = max_chars or 400
 
-	-- Normalize CRLF and stray CR to LF
-	local msg = raw_msg:gsub("\r\n", "\n"):gsub("\r", "\n")
+	-- 1. Try extracting text/plain part from multipart
+	local content = extract_mime_part(raw_msg, "text/plain")
 
-	-- Locate header/body boundary
-	local _, e = msg:find("\n\n", 1, true)
-	local body = e and msg:sub(e + 1) or msg
+	-- 2. If no text/plain, try extracting text/html part from multipart and convert via lynx
+	if not content then
+		local html_part = extract_mime_part(raw_msg, "text/html")
+		if html_part then
+			content = html_to_plain(html_part)
+		end
+	end
 
-	-- If multipart MIME boundary is encountered first, skip initial part headers
-	if body:sub(1, 2) == "--" then
-		local _, inner_e = body:find("\n\n", 1, true)
-		if inner_e and inner_e < 600 then
-			body = body:sub(inner_e + 1)
+	-- 3. If neither multipart part was found, handle as single-part message
+	if not content then
+		content = raw_msg
+
+		-- Locate header/body boundary if full raw message was passed
+		local _, e = content:find("\n\n", 1, true)
+		if e and e < 1500 then
+			content = content:sub(e + 1)
+		end
+
+		local cte = (header and parse_header_field(header, "Content-Transfer-Encoding")) or ""
+		cte = cte:lower()
+		if cte:match("quoted%-printable") then
+			content = decode_qp(content)
+		elseif cte:match("base64") then
+			content = decode_b64(content)
+		end
+
+		local ct = (header and parse_header_field(header, "Content-Type")) or ""
+		ct = ct:lower()
+		if ct:match("text/html")
+			or content:match("<%s*[!dD][oO][cC][tT][yY][pP][eE]")
+			or content:match("<%s*[hH][tT][mM][lL]")
+			or content:match("<%s*[bB][oO][dD][yY]") then
+			content = html_to_plain(content)
 		end
 	end
 
 	-- Strip ANSI terminal escape sequences
-	body = body:gsub("\27%[[0-9;]*[a-zA-Z]", ""):gsub("\27", "")
+	content = content:gsub("\27%[[0-9;]*[a-zA-Z]", ""):gsub("\27", "")
 
-	-- Strip non-printable ASCII control characters (preserving tab and newline)
-	body = body:gsub("[%z\1-\8\11-\31\127]", " ")
+	-- Normalize CRLF and filter non-printable control characters
+	content = content:gsub("\r\n", "\n"):gsub("\r", "\n")
+	content = content:gsub("[\1-\8\11-\31\127]", " ")
 
-	-- Trim leading whitespace
-	body = body:gsub("^%s+", "")
+	-- Trim whitespace and collapse excessive blank lines
+	content = content:gsub("^%s+", ""):gsub("%s+$", "")
+	content = content:gsub("\n%s*\n+", "\n\n")
 
-	if #body > max_chars then
-		body = body:sub(1, max_chars) .. "..."
+	if #content > max_chars then
+		content = content:sub(1, max_chars) .. "..."
 	end
-	return body
+	return content
 end
 
 local server     = os.getenv("IMAP_SERVER")
@@ -337,7 +461,7 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 			print(string.format("From:    %s", from_str))
 			print(string.format("Subject: %s", subj_str))
 			print(string.rep("-", 80))
-			print(get_body_snippet(body, 350))
+			print(get_body_snippet(body, 350, header))
 			print(string.rep("-", 80))
 
 			while true do
@@ -390,7 +514,7 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 					print("\n--- Full Headers ---")
 					print(header or "(No headers)")
 					print("\n--- Extended Body Preview ---")
-					print(get_body_snippet(body, 2000))
+					print(get_body_snippet(body, 2000, header))
 					print("-----------------------------\n")
 				elseif choice == "q" or choice == "quit" then
 					print("\n[*] Quitting live training...")

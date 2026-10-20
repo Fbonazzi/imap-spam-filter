@@ -18,6 +18,7 @@ RUN useradd --uid ${APP_UID} --gid ${APP_GID} --create-home --shell /bin/bash ${
 # Install minimal toolchain: imapfilter, bogofilter, ca-certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
 	imapfilter \
+	lynx \
 	bogofilter \
 	ca-certificates \
 	bash \
