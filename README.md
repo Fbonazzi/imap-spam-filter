@@ -49,7 +49,18 @@ Store your IMAP password in the Podman user secret store:
 echo -n "YOUR_PASSWORD" | podman secret create imap_pass_secret -
 ```
 
-### 4. Enable Periodic Automation (Timer)
+### 4. Initial Training
+Bogofilter requires an initial corpus of messages to learn spam vs ham characteristics.
+Run batch training on existing messages in your Junk and INBOX folders:
+```bash
+./install.sh train
+```
+You can inspect the number of trained messages at any time:
+```bash
+./install.sh stats
+```
+
+### 5. Enable Periodic Automation (Timer)
 Once initial setup is verified, enable the systemd user timer to run the filter automatically (default: every 5 minutes after each run completes):
 ```bash
 systemctl --user enable --now imap-spam-filter.timer
@@ -64,6 +75,8 @@ The `install.sh` helper provides management commands:
 | Command | Action |
 |---|---|
 | `./install.sh run` | Trigger a manual filter run and view journal output |
+| `./install.sh train` | Run automated batch training on `Junk` and `INBOX` |
+| `./install.sh stats` | Show Bogofilter database statistics (trained message counts) |
 | `./install.sh build` | Sync changes to `~/.local/src/imap-filter` and rebuild container |
 | `./install.sh status` | Check status of container service and build service |
 | `./install.sh logs` | Display recent journal logs for `imap-spam-filter` |

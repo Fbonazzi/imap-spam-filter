@@ -41,7 +41,14 @@ if not server or not user or not pass then
 end
 
 -- Operational Tuning
+local filter_mode    = (os.getenv("FILTER_MODE") or "filter"):lower()
 local batch_size     = get_env_int("BATCH_SIZE", 25)
+local max_retries    = get_env_int("MAX_RETRIES", 3)
+local retry_delay    = get_env_int("RETRY_DELAY", 5)
+local max_msg_size   = get_env_int("MAX_MSG_SIZE", 1048576) -- 1MB
+local train_max      = get_env_int("TRAIN_MAX_MESSAGES", 100)
+local auto_update    = os.getenv("BOGOFILTER_AUTO_UPDATE") == "true"
+
 local max_retries    = get_env_int("MAX_RETRIES", 3)
 local retry_delay    = get_env_int("RETRY_DELAY", 5)
 local max_msg_size   = get_env_int("MAX_MSG_SIZE", 1048576) -- 1MB
@@ -115,6 +122,71 @@ end
 local initial_ok, initial_err = connect()
 if not initial_ok then
 	error("Failed initial connection to IMAP server: " .. tostring(initial_err))
+end
+
+
+--------------------
+-- MODE: TRAINING
+--------------------
+if filter_mode == "train" then
+	print(string.format("[*] Training mode active. Target max messages per category: %d", train_max))
+	print(string.format("[*] Training Spam on '%s'...", junk_name))
+
+	local j_ok, junk_msgs = with_retry("select junk messages for training", function()
+		return junk:select_all()
+	end)
+
+	local spam_trained = 0
+	if j_ok and junk_msgs then
+		local count = 0
+		for _, msg in ipairs(junk_msgs) do
+			count = count + 1
+			if count > train_max then break end
+
+			local train_ok = with_retry("train spam", function()
+				local single = { [1] = junk, [2] = msg[2] }
+				local status = single:pipe_to(string.format("bogofilter -s -d %q", data_dir))
+				return (status == 0)
+			end)
+
+			if train_ok then
+				spam_trained = spam_trained + 1
+			end
+		end
+		print(string.format("[+] Successfully trained %d spam message(s).", spam_trained))
+	else
+		io.stderr:write("[!] Failed to select messages from Junk folder.\n")
+	end
+
+	print(string.format("[*] Training Ham on read messages in '%s'...", inbox_name))
+	local h_ok, seen_msgs = with_retry("select seen inbox messages for training", function()
+		return inbox:is_seen()
+	end)
+
+	local ham_trained = 0
+	if h_ok and seen_msgs then
+		local count = 0
+		for _, msg in ipairs(seen_msgs) do
+			count = count + 1
+			if count > train_max then break end
+
+			local train_ok = with_retry("train ham", function()
+				local single = { [1] = inbox, [2] = msg[2] }
+				local status = single:pipe_to(string.format("bogofilter -n -d %q", data_dir))
+				return (status == 0)
+			end)
+
+			if train_ok then
+				ham_trained = ham_trained + 1
+			end
+		end
+		print(string.format("[+] Successfully trained %d ham message(s).", ham_trained))
+	else
+		io.stderr:write("[!] Failed to select read messages from INBOX.\n")
+	end
+
+	print(string.format("[✓] Training complete. Spam trained: %d | Ham trained: %d", spam_trained, ham_trained))
+	os.exit(0)
 end
 
 ---------------

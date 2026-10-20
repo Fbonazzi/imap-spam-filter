@@ -12,12 +12,14 @@ PODMAN_SECRET="imap_pass_secret"
 
 usage() {
     cat << EOF
-Usage: $0 [ install | build | run | status | logs | reinstall | uninstall ]
+Usage: $0 [ install | build | run | train | stats | status | logs | reinstall | uninstall ]
 
 Commands:
   install          Install Quadlet units, deploy source to ~/.local/src, and build image
   build            Sync local source changes to ~/.local/src and rebuild container
   run              Run the filter service once and display logs
+  train            Run automated batch training on Junk (spam) and INBOX (ham)
+  stats            Show Bogofilter database wordlist statistics (message counts)
   status           Show systemd status of container and build services
   logs             View recent journal logs for the filter service
   reinstall        Re-deploy files and rebuild services
@@ -96,6 +98,45 @@ install_service() {
     echo "    2. Verify secret: podman secret inspect ${PODMAN_SECRET}"
     echo "    3. Test filter manually: $0 run"
     echo "    4. Enable timer: systemctl --user enable --now imap-spam-filter.timer"
+}
+
+
+train_service() {
+    check_prerequisites
+    echo "[+] Running automated batch training..."
+    if ! podman image exists localhost/imap-spam-filter:latest; then
+        echo "[*] Building container image first..."
+        systemctl --user start imap-spam-filter-build.service
+    fi
+
+    podman run --rm -it \
+        --name imap_spam_filter_train \
+        --env-file "${CONFIG_DIR}/imap.env" \
+        -e FILTER_MODE=train \
+        --secret "${PODMAN_SECRET},type=mount,target=/run/secrets/imap_pass_secret" \
+        -v "${PODMAN_VOLUME_NAME}:/home/imap-filter/data:rw" \
+        -v "${CONFIG_DIR}/config.lua:/home/imap-filter/config/config.lua:ro,Z" \
+        localhost/imap-spam-filter:latest
+
+    echo
+    stats_service
+}
+
+stats_service() {
+    echo "[+] Bogofilter wordlist statistics:"
+    if ! podman volume exists "${PODMAN_VOLUME_NAME}" 2>/dev/null; then
+        echo "[-] Error: Podman volume '${PODMAN_VOLUME_NAME}' does not exist yet."
+        echo "    Run '$0 install' and '$0 train' first."
+        exit 1
+    fi
+
+    podman run --rm \
+        -v "${PODMAN_VOLUME_NAME}:/home/imap-filter/data:ro" \
+        localhost/imap-spam-filter:latest \
+        bogoutil -w /home/imap-filter/data/wordlist.db .MSG_COUNT 2>/dev/null || {
+        echo "[!] No training data found in wordlist.db yet."
+        echo "    Run '$0 train' to train on your existing emails."
+    }
 }
 
 build_service() {
@@ -186,6 +227,12 @@ case "${ACTION}" in
         ;;
     build|update)
         build_service
+        ;;
+    train)
+        train_service
+        ;;
+    stats|info)
+        stats_service
         ;;
     run|test)
         run_service
