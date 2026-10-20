@@ -36,18 +36,35 @@ end
 local function get_body_snippet(raw_msg, max_chars)
 	if not raw_msg or type(raw_msg) ~= "string" then return "" end
 	max_chars = max_chars or 400
-	local _, e = raw_msg:find("\r?\n\r?\n")
-	local body_part = ""
-	if e then
-		body_part = raw_msg:sub(e + 1)
-	else
-		body_part = raw_msg
+
+	-- Normalize CRLF and stray CR to LF
+	local msg = raw_msg:gsub("\r\n", "\n"):gsub("\r", "\n")
+
+	-- Locate header/body boundary
+	local _, e = msg:find("\n\n", 1, true)
+	local body = e and msg:sub(e + 1) or msg
+
+	-- If multipart MIME boundary is encountered first, skip initial part headers
+	if body:sub(1, 2) == "--" then
+		local _, inner_e = body:find("\n\n", 1, true)
+		if inner_e and inner_e < 600 then
+			body = body:sub(inner_e + 1)
+		end
 	end
-	body_part = body_part:gsub("^%s+", "")
-	if #body_part > max_chars then
-		body_part = body_part:sub(1, max_chars) .. "..."
+
+	-- Strip ANSI terminal escape sequences
+	body = body:gsub("\27%[[0-9;]*[a-zA-Z]", ""):gsub("\27", "")
+
+	-- Strip non-printable ASCII control characters (preserving tab and newline)
+	body = body:gsub("[%z\1-\8\11-\31\127]", " ")
+
+	-- Trim leading whitespace
+	body = body:gsub("^%s+", "")
+
+	if #body > max_chars then
+		body = body:sub(1, max_chars) .. "..."
 	end
-	return body_part
+	return body
 end
 
 local server     = os.getenv("IMAP_SERVER")
@@ -181,7 +198,7 @@ if filter_mode == "train" then
 			end)
 
 			if body_ok and body and type(body) == "string" then
-				local train_status = pipe_to(string.format("bogofilter -s -d %q", data_dir), body)
+				local train_status = pipe_to(string.format("bogofilter -s -d %q >/dev/null 2>&1", data_dir), body)
 				if train_status == 0 then
 					spam_trained = spam_trained + 1
 				else
@@ -217,7 +234,7 @@ if filter_mode == "train" then
 			end)
 
 			if body_ok and body and type(body) == "string" then
-				local train_status = pipe_to(string.format("bogofilter -n -d %q", data_dir), body)
+				local train_status = pipe_to(string.format("bogofilter -n -d %q >/dev/null 2>&1", data_dir), body)
 				if train_status == 0 then
 					ham_trained = ham_trained + 1
 				else
@@ -310,17 +327,16 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 			local subj_str = parse_header_field(header, "Subject") or "(No Subject)"
 
 			-- Get current prediction without updating DB
-			local pred_st = pipe_to(string.format("bogofilter -e -p -d %q", data_dir), body)
+			local pred_st = pipe_to(string.format("bogofilter -d %q >/dev/null 2>&1", data_dir), body)
 			local pred_str = (pred_st == 0 and "SPAM") or (pred_st == 1 and "HAM") or (pred_st == 2 and "UNSURE") or "UNTRAINED"
 
 			local count_display = string.format("[%d%s]", reviewed + 1, (live_train_max > 0 and string.format("/%d", live_train_max)) or "")
-			print(string.rep("=", 80))
+			print("\n" .. string.rep("=", 80))
 			print(string.format("%s UID: %s | Status: %s | Bogofilter Prediction: %s", count_display, tostring(actual_uid), status_tag, pred_str))
 			print(string.format("Date:    %s", date_str))
 			print(string.format("From:    %s", from_str))
 			print(string.format("Subject: %s", subj_str))
 			print(string.rep("-", 80))
-			print("Body Preview:")
 			print(get_body_snippet(body, 350))
 			print(string.rep("-", 80))
 
@@ -336,7 +352,7 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 
 				local choice = line:gsub("^%s+", ""):gsub("%s+$", ""):lower()
 				if choice == "s" or choice == "spam" then
-					local train_st = pipe_to(string.format("bogofilter -s -d %q", data_dir), body)
+					local train_st = pipe_to(string.format("bogofilter -s -d %q >/dev/null 2>&1", data_dir), body)
 					if train_st == 0 then
 						print(string.format("[✓] Trained UID %s as SPAM in Bogofilter.", tostring(actual_uid)))
 						local move_ok = with_retry("Move spam UID " .. tostring(actual_uid) .. " to Junk", function()
@@ -356,7 +372,7 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 					end
 					break
 				elseif choice == "h" or choice == "ham" then
-					local train_st = pipe_to(string.format("bogofilter -n -d %q", data_dir), body)
+					local train_st = pipe_to(string.format("bogofilter -n -d %q >/dev/null 2>&1", data_dir), body)
 					if train_st == 0 then
 						print(string.format("[✓] Trained UID %s as HAM in Bogofilter (retained in INBOX).", tostring(actual_uid)))
 						trained_ham = trained_ham + 1
