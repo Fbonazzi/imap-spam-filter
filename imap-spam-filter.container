@@ -1,11 +1,9 @@
 [Unit]
 Description=IMAP Spam Filter Service (Podman Quadlet)
 After=network-online.target
-After=imap-spam-filter-build.service
-Requires=imap-spam-filter-build.service
 
 [Container]
-Image=localhost/imap-spam-filter:latest
+Image=imap-spam-filter.build
 ContainerName=imap_spam_filter
 
 Secret=imap_pass_secret,type=mount,target=/run/secrets/imap_pass_secret
@@ -17,8 +15,8 @@ EnvironmentFile=%E/imap-filter/imap.env
 Volume=%E/imap-filter/config.lua:/home/imap-filter/config/config.lua:ro,Z
 Volume=imap-spam-filter-data.volume:/home/imap-filter/data:rw
 
-Tmpfs=/tmp:exec,mode=1777,size=64M
-Tmpfs=/home/imap-filter/.imapfilter:mode=0700
+Tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64M,mode=1777
+Tmpfs=/home/imap-filter/.imapfilter:rw,size=16M,mode=1777
 
 # Hardening
 ReadOnly=True
@@ -30,3 +28,8 @@ LogDriver=k8s-file
 
 [Service]
 Type=oneshot
+RemainAfterExit=no
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

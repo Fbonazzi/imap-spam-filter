@@ -27,8 +27,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR ${HOME}
 
 COPY --chown=${APP_USER}:${APP_USER} entrypoint.sh /entrypoint.sh
+COPY --chown=${APP_USER}:${APP_USER} config.lua ${HOME}/default_config.lua
 RUN chmod +x /entrypoint.sh
 
 USER ${APP_UID}:${APP_GID}
 
 ENTRYPOINT ["/entrypoint.sh"]
+CMD []

@@ -3,7 +3,7 @@ Description=Trigger IMAP Spam Filter every 5 minutes
 
 [Timer]
 OnBootSec=1min
-OnUnitActiveSec=5min
+OnUnitInactiveSec=5min
 RandomizedDelaySec=10s
 
 [Install]

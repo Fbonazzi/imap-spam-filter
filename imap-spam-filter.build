@@ -2,8 +2,11 @@
 ImageTag=localhost/imap-spam-filter:latest
 Pull=newer
 
-SetWorkingDirectory=%S/../src/imap-filter
+SetWorkingDirectory=%h/.local/src/imap-filter
 
 BuildArg=APP_USER=imap-filter
 BuildArg=APP_UID=10001
 BuildArg=APP_GID=10001
+
+[Service]
+RemainAfterExit=yes

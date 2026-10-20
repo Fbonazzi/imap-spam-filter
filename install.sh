@@ -1,126 +1,200 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Standard XDG Directory Paths
 CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/imap-filter"
 PODMAN_VOLUME_NAME="imap-spam-filter-data"
-SRC_DIR="${HOME}/.local/src/imap-filter"
+SOURCE_DEPLOY_DIR="${HOME}/.local/src/imap-filter"
 QUADLET_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/containers/systemd"
-
 PODMAN_SECRET="imap_pass_secret"
 
 usage() {
-    echo "Usage: $0 [ install | uninstall ]"
-    echo "  install    (Default) Install and enable Quadlet files, build context, and systemd timer."
-    echo "  reinstall  Stop services, remove systemd/Quadlet files, and reinstall."
-    echo "  uninstall  Stop services, remove systemd/Quadlet files, and clean up source/image."
+    cat << EOF
+Usage: $0 [ install | build | run | status | logs | reinstall | uninstall ]
+
+Commands:
+  install          Install Quadlet units, deploy source to ~/.local/src, and build image
+  build            Sync local source changes to ~/.local/src and rebuild container
+  run              Run the filter service once and display logs
+  status           Show systemd status of container and build services
+  logs             View recent journal logs for the filter service
+  reinstall        Re-deploy files and rebuild services
+  uninstall        Stop services, remove Quadlet units, and clean up source/image
+
+EOF
     exit 1
 }
 
-install_service() {
-    echo "[+] Creating XDG directory structure..."
-    mkdir -p "${CONFIG_DIR}" "${SRC_DIR}" "${QUADLET_DIR}"
+check_prerequisites() {
+    if ! command -v podman &>/dev/null; then
+        echo "[-] Error: Podman is not installed or not in PATH."
+        exit 1
+    fi
 
-    # Verify IMAP configuration environment file exists
+    if ! command -v systemctl &>/dev/null; then
+        echo "[-] Error: systemctl is not available."
+        exit 1
+    fi
+
     if [ ! -f "${CONFIG_DIR}/imap.env" ]; then
-        echo "[-] Error: IMAP configuration file missing at ${CONFIG_DIR}/imap.env"
-        echo "    Please create ${CONFIG_DIR}/imap.env before running install."
+        echo "[!] Configuration file not found at ${CONFIG_DIR}/imap.env"
+        echo "    Please create and populate this file before starting the service."
         exit 1
     fi
-    chmod 600 "${CONFIG_DIR}/imap.env"
 
-	# Verify podman secret exists
-	if ! podman secret inspect "${PODMAN_SECRET}" >/dev/null; then
-        echo "[-] Error: Podman secret ${PODMAN_SECRET} missing. Create it with"
-        echo "    podman secret create ${PODMAN_SECRET} -"
-        exit 1
-	fi
+    if ! podman secret exists "${PODMAN_SECRET}" 2>/dev/null; then
+        echo "[!] Notice: Podman secret '${PODMAN_SECRET}' is missing."
+        echo "    Create it with: podman secret create ${PODMAN_SECRET} <(echo -n 'YOUR_PASSWORD')"
+    fi
+}
 
-    # Copy Lua config if present in working directory
-    if [ -f "config.lua" ]; then
-        echo "[+] Copying config.lua to ${CONFIG_DIR}/..."
-        cp config.lua "${CONFIG_DIR}/config.lua"
+install_service() {
+    echo "[+] Creating directory structure..."
+    mkdir -p "${CONFIG_DIR}"
+    mkdir -p "${SOURCE_DEPLOY_DIR}"
+    mkdir -p "${QUADLET_DIR}"
+
+    echo "[+] Deploying configuration and environment templates..."
+    if [ ! -f "${CONFIG_DIR}/imap.env" ]; then
+        cp -n "${SCRIPT_DIR}/imap.env" "${CONFIG_DIR}/imap.env"
+        echo "[*] Created initial config at ${CONFIG_DIR}/imap.env (EDIT THIS FILE)"
     fi
 
-    echo "[+] Copying build source files to ${SRC_DIR}..."
-    cp Containerfile "${SRC_DIR}/"
-    cp entrypoint.sh "${SRC_DIR}/"
+    cp "${SCRIPT_DIR}/config.lua" "${CONFIG_DIR}/config.lua"
 
-    echo "[+] Installing Quadlet unit files to ${QUADLET_DIR}..."
-    cp imap-spam-filter.build "${QUADLET_DIR}/"
-    cp imap-spam-filter.container "${QUADLET_DIR}/"
-    #cp imap-spam-filter.timer "${QUADLET_DIR}/"
-    cp imap-spam-filter-data.volume "${QUADLET_DIR}/"
+    echo "[+] Deploying container build sources to ${SOURCE_DEPLOY_DIR}..."
+    cp "${SCRIPT_DIR}/Containerfile" "${SOURCE_DEPLOY_DIR}/"
+    cp "${SCRIPT_DIR}/entrypoint.sh" "${SOURCE_DEPLOY_DIR}/"
+    cp "${SCRIPT_DIR}/config.lua" "${SOURCE_DEPLOY_DIR}/"
+
+    echo "[+] Deploying Podman Quadlet unit files to ${QUADLET_DIR}..."
+    cp "${SCRIPT_DIR}/imap-spam-filter-data.volume" "${QUADLET_DIR}/"
+    cp "${SCRIPT_DIR}/imap-spam-filter.build" "${QUADLET_DIR}/"
+    cp "${SCRIPT_DIR}/imap-spam-filter.container" "${QUADLET_DIR}/"
+    cp "${SCRIPT_DIR}/imap-spam-filter.timer" "${QUADLET_DIR}/"
+
+    echo "[+] Checking Podman secret '${PODMAN_SECRET}'..."
+    if ! podman secret exists "${PODMAN_SECRET}" 2>/dev/null; then
+        echo "[!] Podman secret '${PODMAN_SECRET}' does not exist."
+        echo "    To set it up securely, run:"
+        echo "    podman secret create ${PODMAN_SECRET} <(echo -n 'YOUR_PASSWORD')"
+    else
+        echo "[*] Podman secret '${PODMAN_SECRET}' is present."
+    fi
 
     echo "[+] Reloading systemd user daemon..."
     systemctl --user daemon-reload
 
-    echo "[+] Run the service once with:"
-    echo "    systemctl --user start imap-spam-filter.service"
-    echo "[+] Enable and start the systemd timer with:"
-    echo "    systemctl --user enable --now imap-spam-filter.timer"
+    echo "[+] Triggering container image build via Quadlet..."
+    systemctl --user start imap-spam-filter-build.service
 
-    echo "[+] Enable user linger for background service execution with:"
-    echo "    loginctl enable-linger ${USER}"
+    echo
+    echo "[✓] Deployment complete!"
+    echo "    1. Verify configuration: ${CONFIG_DIR}/imap.env"
+    echo "    2. Verify secret: podman secret inspect ${PODMAN_SECRET}"
+    echo "    3. Test filter manually: $0 run"
+    echo "    4. Enable timer: systemctl --user enable --now imap-spam-filter.timer"
+}
 
-    echo "[✓] Installation complete!"
-    echo "    Config: ${CONFIG_DIR}/"
-    echo "    Source: ${SRC_DIR}/"
-    echo "    Data:   ${PODMAN_VOLUME_NAME}.volume"
+build_service() {
+    echo "[+] Syncing source changes to ${SOURCE_DEPLOY_DIR}..."
+    mkdir -p "${SOURCE_DEPLOY_DIR}"
+    cp "${SCRIPT_DIR}/Containerfile" "${SOURCE_DEPLOY_DIR}/"
+    cp "${SCRIPT_DIR}/entrypoint.sh" "${SOURCE_DEPLOY_DIR}/"
+    cp "${SCRIPT_DIR}/config.lua" "${SOURCE_DEPLOY_DIR}/"
+    cp "${SCRIPT_DIR}/config.lua" "${CONFIG_DIR}/config.lua"
+
+    echo "[+] Triggering container rebuild..."
+    systemctl --user restart imap-spam-filter-build.service
+    systemctl --user status imap-spam-filter-build.service --no-pager
+}
+
+run_service() {
+    check_prerequisites
+    echo "[+] Running IMAP Spam Filter service..."
+    systemctl --user start imap-spam-filter.service
+    systemctl --user status imap-spam-filter.service --no-pager || true
+    echo
+    echo "[*] Recent journal logs:"
+    journalctl --user -u imap-spam-filter -n 30 --no-pager
+}
+
+status_service() {
+    echo "=== Service Status ==="
+    systemctl --user status imap-spam-filter.service --no-pager || true
+    echo
+    echo "=== Build Service Status ==="
+    systemctl --user status imap-spam-filter-build.service --no-pager || true
+}
+
+logs_service() {
+    journalctl --user -u imap-spam-filter -n 50 --no-pager "$@"
 }
 
 uninstall_service() {
-    echo "[+] Stopping and disabling systemd timer and service..."
+    echo "[+] Stopping systemd services..."
     systemctl --user stop imap-spam-filter.timer 2>/dev/null || true
-    systemctl --user disable imap-spam-filter.timer 2>/dev/null || true
     systemctl --user stop imap-spam-filter.service 2>/dev/null || true
-    systemctl --user disable imap-spam-filter.service 2>/dev/null || true
+    systemctl --user stop imap-spam-filter-build.service 2>/dev/null || true
 
-    echo "[+] Removing Quadlet unit files..."
+    echo "[+] Disabling systemd units..."
+    systemctl --user disable imap-spam-filter.timer 2>/dev/null || true
+
+    echo "[+] Removing Quadlet files from ${QUADLET_DIR}..."
+    rm -f "${QUADLET_DIR}/imap-spam-filter-data.volume"
     rm -f "${QUADLET_DIR}/imap-spam-filter.build"
     rm -f "${QUADLET_DIR}/imap-spam-filter.container"
     rm -f "${QUADLET_DIR}/imap-spam-filter.timer"
-    rm -f "${QUADLET_DIR}/imap-spam-filter-data.volume"
+
+    echo "[+] Removing deployed sources from ${SOURCE_DEPLOY_DIR}..."
+    rm -rf "${SOURCE_DEPLOY_DIR}"
 
     echo "[+] Reloading systemd user daemon..."
     systemctl --user daemon-reload
-    systemctl --user reset-failed 2>/dev/null || true
-
-    echo "[+] Stopping and removing container..."
-    podman stop imap_spam_filter 2>/dev/null || true
-    podman rm -f imap_spam_filter 2>/dev/null || true
-
-    echo "[+] Removing source build directory (${SRC_DIR})..."
-    rm -rf "${SRC_DIR}"
 }
 
 purge_data() {
-    echo "[+] Removing container image..."
-    podman rmi imap-spam-filter:latest 2>/dev/null || true
-    echo
-	read -p "Do you want to PERMANENTLY delete your config (imap.env), podman secret (${PODMAN_SECRET}) and data (wordlist.db)? [y/N]: " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "[+] Removing config directory (${CONFIG_DIR})..."
+    read -rp "Are you sure you want to permanently delete configuration and the Bogofilter database? [y/N] " confirm
+    if [[ "${confirm}" =~ ^[Yy]$ ]]; then
+        echo "[+] Removing configuration directory ${CONFIG_DIR}..."
         rm -rf "${CONFIG_DIR}"
-        echo "[+] Removing stored podman secret (${PODMAN_SECRET})..."
-		podman secret rm "${PODMAN_SECRET}" 2>/dev/null || true
-        echo "[+] Removing persistent data volume (${PODMAN_VOLUME_NAME})..."
-		podman volume rm -f imap-spam-filter-data 2>/dev/null || true
+
+        echo "[+] Removing persistent Podman volume '${PODMAN_VOLUME_NAME}'..."
+        podman volume rm -f "${PODMAN_VOLUME_NAME}" 2>/dev/null || true
+
+        echo "[+] Removing Podman secret '${PODMAN_SECRET}'..."
+        podman secret rm "${PODMAN_SECRET}" 2>/dev/null || true
+
+        echo "[+] Removing container image..."
+        podman rmi -f localhost/imap-spam-filter:latest 2>/dev/null || true
 
         echo "[✓] Complete purge finished."
     else
-		echo "[!] Preserved config (${CONFIG_DIR}), podman secret (${PODMAN_SECRET}) and Bayesian data (${PODMAN_VOLUME_NAME})."
+        echo "[!] Preserved config (${CONFIG_DIR}), podman secret (${PODMAN_SECRET}) and data volume."
         echo "[✓] Service uninstalled cleanly."
     fi
 }
 
-# Default to "install" if no argument is passed
 ACTION="${1:-install}"
+shift || true
 
 case "${ACTION}" in
     install|--install|-i)
         install_service
+        ;;
+    build|update)
+        build_service
+        ;;
+    run|test)
+        run_service
+        ;;
+    status)
+        status_service
+        ;;
+    logs)
+        logs_service "$@"
         ;;
     reinstall|--reinstall|-r)
         uninstall_service
@@ -128,7 +202,7 @@ case "${ACTION}" in
         ;;
     uninstall|--uninstall|-u)
         uninstall_service
-		purge_data
+        purge_data
         ;;
     *)
         usage

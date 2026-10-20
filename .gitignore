@@ -1,0 +1,20 @@
+# Editor and temporary files
+*~
+*.swp
+*.swo
+*.tmp
+*.bak
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Persistent and local runtime data
+*.db
+*.db-journal
+wordlist.db
+data/
+
+# Local environment/secrets overrides
+*.local.env
+*.secret

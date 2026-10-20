@@ -2,5 +2,6 @@
 Description=IMAP Spam Filter Bogofilter Persistent Data Volume
 
 [Volume]
+VolumeName=imap-spam-filter-data
 User=10001
 Group=10001
