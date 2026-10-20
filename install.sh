@@ -20,7 +20,7 @@ Commands:
   build            Sync local source changes to ~/.local/src and rebuild container
   run              Run the filter service once and display logs
   train            Run automated batch training on Junk (spam) and INBOX (ham)
-  live-train [N]   Interactive live training on INBOX messages (newest to oldest; N=0 or omitted = until 'q')
+  live-train [N] [unsure] Interactive live training on INBOX messages (newest to oldest; add 'unsure' to only review ambiguous messages)
   export [FILE]    Export Bogofilter wordlist to host file (default: ./bogofilter-db-DATE.txt; supports .gz, .db)
   import <FILE>    Import Bogofilter wordlist from host file (backs up existing DB; add --merge to combine)
   stats            Show Bogofilter database wordlist statistics (message counts)
@@ -144,13 +144,30 @@ train_service() {
 
 live_train_service() {
     check_prerequisites
-    local limit="${1:-0}"
+    local limit="0"
+    local unsure_only="0"
+
+    for arg in "$@"; do
+        case "${arg}" in
+            unsure|--unsure|-u)
+                unsure_only="1"
+                ;;
+            *)
+                if [[ "${arg}" =~ ^[0-9]+$ ]]; then
+                    limit="${arg}"
+                fi
+                ;;
+        esac
+    done
+
     echo "[+] Running Bogofilter interactive live training..."
     if [ "${limit}" -gt 0 ] 2>/dev/null; then
         echo "[*] Review limit: ${limit} message(s)"
     else
         echo "[*] Review limit: Unlimited (interactive until 'q')"
-        limit="0"
+    fi
+    if [ "${unsure_only}" = "1" ]; then
+        echo "[*] Filter: Unsure-only mode (skipping confirmed HAM/SPAM)"
     fi
 
     if ! podman image exists localhost/imap-spam-filter:latest; then
@@ -163,6 +180,7 @@ live_train_service() {
         --env-file "${CONFIG_DIR}/imap.env" \
         -e FILTER_MODE=live-train \
         -e LIVE_TRAIN_MAX="${limit}" \
+        -e LIVE_TRAIN_UNSURE_ONLY="${unsure_only}" \
         --secret "${PODMAN_SECRET},type=mount,target=/run/secrets/imap_pass_secret" \
         -v "${PODMAN_VOLUME_NAME}:/home/imap-filter/data:rw" \
         -v "${CONFIG_DIR}/config.lua:/home/imap-filter/config/config.lua:ro,Z" \

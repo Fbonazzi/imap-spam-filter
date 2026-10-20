@@ -218,6 +218,8 @@ local max_msg_size   = get_env_int("MAX_MSG_SIZE", 1048576) -- 1MB
 local train_max      = get_env_int("TRAIN_MAX_MESSAGES", 100)
 local live_train_max = get_env_int("LIVE_TRAIN_MAX", 0)
 local auto_update    = os.getenv("BOGOFILTER_AUTO_UPDATE") == "true"
+local live_train_filter = (os.getenv("LIVE_TRAIN_FILTER") or ""):lower()
+local live_train_unsure = live_train_filter == "unsure" or os.getenv("LIVE_TRAIN_UNSURE_ONLY") == "1" or (os.getenv("LIVE_TRAIN_UNSURE_ONLY") or ""):lower() == "true"
 
 -- IMAP protocol options for connection stability
 options.timeout   = 120
@@ -386,6 +388,9 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 	else
 		print("Review limit: Unlimited (interactive until 'q')")
 	end
+	if live_train_unsure then
+		print("Filter:       UNSURE-only (skipping messages already confirmed HAM/SPAM)")
+	end
 
 	-- 1. Query read/seen status for status tags
 	local seen_ok, seen_msgs = with_retry("Query seen INBOX messages", function()
@@ -416,6 +421,7 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 	local trained_spam = 0
 	local trained_ham = 0
 	local skipped = 0
+	local auto_skipped = 0
 	local quit_requested = false
 
 	for i = total_inbox, 1, -1 do
@@ -454,88 +460,92 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 			local pred_st = pipe_to(string.format("bogofilter -d %q >/dev/null 2>&1", data_dir), body)
 			local pred_str = (pred_st == 0 and "SPAM") or (pred_st == 1 and "HAM") or (pred_st == 2 and "UNSURE") or "UNTRAINED"
 
-			local default_action = (pred_st == 0 and "spam") or (pred_st == 1 and "ham") or "skip"
-			local prompt_str
-			if default_action == "spam" then
-				prompt_str = "Classify -> [S]pam | [h]am | [k]kip | [v]iew full | [q]uit [default: SPAM]: "
-			elseif default_action == "ham" then
-				prompt_str = "Classify -> [s]pam | [H]am | [k]kip | [v]iew full | [q]uit [default: HAM]: "
+			if live_train_unsure and (pred_st == 0 or pred_st == 1) then
+				auto_skipped = auto_skipped + 1
 			else
-				prompt_str = "Classify -> [s]pam | [h]am | [K]kip | [v]iew full | [q]uit [default: skip]: "
-			end
-
-			local count_display = string.format("[%d%s]", reviewed + 1, (live_train_max > 0 and string.format("/%d", live_train_max)) or "")
-			print("\n" .. string.rep("=", 80))
-			print(string.format("%s UID: %s | Status: %s | Bogofilter Prediction: %s", count_display, tostring(actual_uid), status_tag, pred_str))
-			print(string.format("Date:    %s", date_str))
-			print(string.format("From:    %s", from_str))
-			print(string.format("Subject: %s", subj_str))
-			print(string.rep("-", 80))
-			print(get_body_snippet(body, 350, header))
-			print(string.rep("-", 80))
-
-			while true do
-				io.write(prompt_str)
-				io.flush()
-				local line = io.read()
-				if not line then
-					print("\n[*] Input closed.")
-					quit_requested = true
-					break
-				end
-
-				local choice = line:gsub("^%s+", ""):gsub("%s+$", ""):lower()
-				if choice == "" then
-					choice = default_action
-				end
-
-				if choice == "s" or choice == "spam" then
-					local train_st = pipe_to(string.format("bogofilter -s -d %q >/dev/null 2>&1", data_dir), body)
-					if train_st == 0 then
-						print(string.format("[✓] Trained UID %s as SPAM in Bogofilter.", tostring(actual_uid)))
-						local move_ok = with_retry("Move spam UID " .. tostring(actual_uid) .. " to Junk", function()
-							msg_obj[1] = inbox
-							inbox:move_messages(junk, { msg_obj })
-							return true
-						end)
-						if move_ok then
-							print("[✓] Moved message to Junk folder.")
-						else
-							io.stderr:write("[!] Warning: Failed to move message to Junk folder.\n")
-						end
-						trained_spam = trained_spam + 1
-						reviewed = reviewed + 1
-					else
-						io.stderr:write(string.format("[!] Error: Bogofilter failed to train spam (exit code %s)\n", tostring(train_st)))
-					end
-					break
-				elseif choice == "h" or choice == "ham" then
-					local train_st = pipe_to(string.format("bogofilter -n -d %q >/dev/null 2>&1", data_dir), body)
-					if train_st == 0 then
-						print(string.format("[✓] Trained UID %s as HAM in Bogofilter (retained in INBOX).", tostring(actual_uid)))
-						trained_ham = trained_ham + 1
-						reviewed = reviewed + 1
-					else
-						io.stderr:write(string.format("[!] Error: Bogofilter failed to train ham (exit code %s)\n", tostring(train_st)))
-					end
-					break
-				elseif choice == "k" or choice == "skip" then
-					print(string.format("[-] Skipped UID %s.", tostring(actual_uid)))
-					skipped = skipped + 1
-					reviewed = reviewed + 1
-					break
-				elseif choice == "v" or choice == "view" then
-					print("\n--- Full Headers ---")
-					print(header or "(No headers)")
-					print("\n--- Extended Body Preview ---")
-					print(get_body_snippet(body, 2000, header))
-					print("-----------------------------\n")
-				elseif choice == "q" or choice == "quit" then
-					print("\n[*] Quitting live training...")
-					quit_requested = true
-					break
+				local default_action = (pred_st == 0 and "spam") or (pred_st == 1 and "ham") or "skip"
+				local prompt_str
+				if default_action == "spam" then
+					prompt_str = "Classify -> [S]pam | [h]am | [k]kip | [v]iew full | [q]uit [default: SPAM]: "
+				elseif default_action == "ham" then
+					prompt_str = "Classify -> [s]pam | [H]am | [k]kip | [v]iew full | [q]uit [default: HAM]: "
 				else
-					print("[!] Invalid choice. Enter 's' for Spam, 'h' for Ham, 'k' to Skip, 'v' to View, or 'q' to Quit.")
+					prompt_str = "Classify -> [s]pam | [h]am | [K]kip | [v]iew full | [q]uit [default: skip]: "
+				end
+
+				local count_display = string.format("[%d%s]", reviewed + 1, (live_train_max > 0 and string.format("/%d", live_train_max)) or "")
+				print("\n" .. string.rep("=", 80))
+				print(string.format("%s UID: %s | Status: %s | Bogofilter Prediction: %s", count_display, tostring(actual_uid), status_tag, pred_str))
+				print(string.format("Date:    %s", date_str))
+				print(string.format("From:    %s", from_str))
+				print(string.format("Subject: %s", subj_str))
+				print(string.rep("-", 80))
+				print(get_body_snippet(body, 350, header))
+				print(string.rep("-", 80))
+
+				while true do
+					io.write(prompt_str)
+					io.flush()
+					local line = io.read()
+					if not line then
+						print("\n[*] Input closed.")
+						quit_requested = true
+						break
+					end
+
+					local choice = line:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+					if choice == "" then
+						choice = default_action
+					end
+
+					if choice == "s" or choice == "spam" then
+						local train_st = pipe_to(string.format("bogofilter -s -d %q >/dev/null 2>&1", data_dir), body)
+						if train_st == 0 then
+							print(string.format("[✓] Trained UID %s as SPAM in Bogofilter.", tostring(actual_uid)))
+							local move_ok = with_retry("Move spam UID " .. tostring(actual_uid) .. " to Junk", function()
+								msg_obj[1] = inbox
+								inbox:move_messages(junk, { msg_obj })
+								return true
+							end)
+							if move_ok then
+								print("[✓] Moved message to Junk folder.")
+							else
+								io.stderr:write("[!] Warning: Failed to move message to Junk folder.\n")
+							end
+							trained_spam = trained_spam + 1
+							reviewed = reviewed + 1
+						else
+							io.stderr:write(string.format("[!] Error: Bogofilter failed to train spam (exit code %s)\n", tostring(train_st)))
+						end
+						break
+					elseif choice == "h" or choice == "ham" then
+						local train_st = pipe_to(string.format("bogofilter -n -d %q >/dev/null 2>&1", data_dir), body)
+						if train_st == 0 then
+							print(string.format("[✓] Trained UID %s as HAM in Bogofilter (retained in INBOX).", tostring(actual_uid)))
+							trained_ham = trained_ham + 1
+							reviewed = reviewed + 1
+						else
+							io.stderr:write(string.format("[!] Error: Bogofilter failed to train ham (exit code %s)\n", tostring(train_st)))
+						end
+						break
+					elseif choice == "k" or choice == "skip" then
+						print(string.format("[-] Skipped UID %s.", tostring(actual_uid)))
+						skipped = skipped + 1
+						reviewed = reviewed + 1
+						break
+					elseif choice == "v" or choice == "view" then
+						print("\n--- Full Headers ---")
+						print(header or "(No headers)")
+						print("\n--- Extended Body Preview ---")
+						print(get_body_snippet(body, 2000, header))
+						print("-----------------------------\n")
+					elseif choice == "q" or choice == "quit" then
+						print("\n[*] Quitting live training...")
+						quit_requested = true
+						break
+					else
+						print("[!] Invalid choice. Enter 's' for Spam, 'h' for Ham, 'k' to Skip, 'v' to View, or 'q' to Quit.")
+					end
 				end
 			end
 		end
@@ -551,6 +561,9 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 	print(string.format("Trained as SPAM:  %d", trained_spam))
 	print(string.format("Trained as HAM:   %d", trained_ham))
 	print(string.format("Skipped:          %d", skipped))
+	if live_train_unsure then
+		print(string.format("Auto-skipped:     %d (already confirmed HAM/SPAM)", auto_skipped))
+	end
 	print(string.rep("=", 80))
 
 	local db_file = data_dir .. "/wordlist.db"
