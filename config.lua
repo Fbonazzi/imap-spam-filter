@@ -454,6 +454,16 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 			local pred_st = pipe_to(string.format("bogofilter -d %q >/dev/null 2>&1", data_dir), body)
 			local pred_str = (pred_st == 0 and "SPAM") or (pred_st == 1 and "HAM") or (pred_st == 2 and "UNSURE") or "UNTRAINED"
 
+			local default_action = (pred_st == 0 and "spam") or (pred_st == 1 and "ham") or "skip"
+			local prompt_str
+			if default_action == "spam" then
+				prompt_str = "Classify -> [S]pam | [h]am | [k]kip | [v]iew full | [q]uit [default: SPAM]: "
+			elseif default_action == "ham" then
+				prompt_str = "Classify -> [s]pam | [H]am | [k]kip | [v]iew full | [q]uit [default: HAM]: "
+			else
+				prompt_str = "Classify -> [s]pam | [h]am | [K]kip | [v]iew full | [q]uit [default: skip]: "
+			end
+
 			local count_display = string.format("[%d%s]", reviewed + 1, (live_train_max > 0 and string.format("/%d", live_train_max)) or "")
 			print("\n" .. string.rep("=", 80))
 			print(string.format("%s UID: %s | Status: %s | Bogofilter Prediction: %s", count_display, tostring(actual_uid), status_tag, pred_str))
@@ -465,7 +475,7 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 			print(string.rep("-", 80))
 
 			while true do
-				io.write("Classify -> [s]pam | [h]am | [k]kip | [v]iew full | [q]uit: ")
+				io.write(prompt_str)
 				io.flush()
 				local line = io.read()
 				if not line then
@@ -475,6 +485,10 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 				end
 
 				local choice = line:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+				if choice == "" then
+					choice = default_action
+				end
+
 				if choice == "s" or choice == "spam" then
 					local train_st = pipe_to(string.format("bogofilter -s -d %q >/dev/null 2>&1", data_dir), body)
 					if train_st == 0 then
@@ -505,7 +519,7 @@ if filter_mode == "live-train" or filter_mode == "interactive" then
 						io.stderr:write(string.format("[!] Error: Bogofilter failed to train ham (exit code %s)\n", tostring(train_st)))
 					end
 					break
-				elseif choice == "k" or choice == "skip" or choice == "" then
+				elseif choice == "k" or choice == "skip" then
 					print(string.format("[-] Skipped UID %s.", tostring(actual_uid)))
 					skipped = skipped + 1
 					reviewed = reviewed + 1
